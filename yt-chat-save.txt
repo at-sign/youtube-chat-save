@@ -1,363 +1,565 @@
 javascript:(function(){
-console.log('=== CHAT PARSER STARTED ===');
-let chatDiv = null;
-const chatFrame = document.querySelector('iframe#chatframe');
-if (chatFrame) {
-try {
-const iframeDoc = chatFrame.contentDocument || chatFrame.contentWindow.document;
-if (iframeDoc) {
-chatDiv = iframeDoc.querySelector('div#chat');
-console.log('Found div#chat in iframe:', !!chatDiv);
+let capturedMessages = [];
+let isMonitoring = false;
+let monitorInterval = null;
+let processedMessageIds = new Set();
+
+
+function escapeHtml(text) {
+  const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+  return text.replace(/[&<>"']/g, m => map[m]);
 }
-} catch (e) {
-console.log('Cannot access iframe content (cross-origin):', e.message);
+
+function getMessageTimestamp() {
+  const now = new Date();
+  return now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
 }
+
+function updateLog(found, newCount, total) {
+  const logContainer = document.getElementById('logContainer');
+  if (logContainer) {
+    logContainer.textContent = `C: ${found} N: ${newCount} T: ${total}`;
+  }
 }
-if (!chatDiv) {
-console.log('Looking for div#contents with class "style-scope yt-live-chat-app"...');
-chatDiv = document.querySelector('div#contents.style-scope.yt-live-chat-app');
-console.log('div#contents found:', !!chatDiv);
+
+function updateMonitoringBox() {
+  const countEl = document.getElementById('messageCount');
+  const statusEl = document.getElementById('monitorStatus');
+  if (countEl) countEl.textContent = capturedMessages.length;
+  if (statusEl) statusEl.textContent = isMonitoring ? '🟢 Active' : '🔴 Stopped';
 }
-try {
-if (chatDiv) {
-console.log('Extracting HTML from div#chat...');
-let html = chatDiv.innerHTML;
-console.log('Original HTML length:', html.length);
-console.log('Original HTML preview (first 500 chars):', html.substring(0, 500));
-console.log('Applying regex replacements...');
-const replacements = [
-{
-name: 'author chip separators',
-pattern: /yt-live-chat-author-chip"><\/span>/g,
-replacement: 'yt-live-chat-author-chip"> - </span>'
-},
-{
-name: 'tp-yt-iron-pages element',
-pattern: /<tp-yt-iron-pages[^>]*id="panel-pages"[^>]*>[\s\S]*?<\/tp-yt-iron-pages>/g,
-replacement: ''
-},
-{
-name: 'menu divs',
-pattern: /<div[^>]*\bid="menu"[^>]*>[\s\S]*?<\/div>/g,
-replacement: ''
-},
-{
-name: 'yt-image tags',
-pattern: /<yt-image[^>]*<\/yt-image>/g,
-replacement: ''
-},
-{
-name: 'yt-icon tags',
-pattern: /<yt-icon[^>]*>[\s\S]*?<\/yt-icon>/g,
-replacement: ''
-},
-{
-name: 'item-offset divs',
-pattern: /<div[^>]*\bid="item-offset"[^>]*>[\s\S]*?<\/div>/g,
-replacement: ''
-},
-{
-name: 'button tags',
-pattern: /<button[^>]*>[\s\S]*?<\/button>/g,
-replacement: ''
+
+function showAlert(message) {
+  const style = `
+#alertOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10002;
 }
-];
-replacements.forEach((item, index) => {
-console.log(`Removing ${item.name}...`);
-const beforeLen = html.length;
-html = html.replace(item.pattern, item.replacement);
-console.log('Changed from', beforeLen, 'to', html.length, 'chars');
+#alertBox {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  padding: 30px;
+  max-width: 500px;
+  text-align: center;
+  font-family: Arial, sans-serif;
+}
+#alertBox p {
+  margin: 0 0 20px 0;
+  font-size: 16px;
+}
+#alertDismissBtn {
+  padding: 10px 20px;
+  border: none;
+  background: #065fd4;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#alertDismissBtn:hover {
+  background: #0a47a9;
+}
+`;
+  const styleEl = document.createElement('style');
+  styleEl.appendChild(document.createTextNode(style));
+  document.head.appendChild(styleEl);
+  const overlay = document.createElement('div');
+  overlay.id = 'alertOverlay';
+  const alertBox = document.createElement('div');
+  alertBox.id = 'alertBox';
+  const messageEl = document.createElement('p');
+  messageEl.textContent = message;
+  alertBox.appendChild(messageEl);
+  const closeBtn = document.createElement('button');
+  closeBtn.id = 'alertDismissBtn';
+  closeBtn.textContent = 'Dismiss';
+  closeBtn.onclick = () => overlay.remove();
+  alertBox.appendChild(closeBtn);
+  overlay.appendChild(alertBox);
+  document.body.appendChild(overlay);
+}
+
+function createMonitoringBox() {
+const boxStyle = `
+#chatMonitorBox {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: white;
+  border: 2px solid #065fd4;
+  border-radius: 8px;
+  padding: 15px;
+  z-index: 10001;
+  font-family: Arial, sans-serif;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  max-width: 380px;
+}
+#chatMonitorBox h3 {
+  margin: 0 0 10px 0;
+  color: #065fd4;
+  font-size: 14px;
+}
+#chatMonitorBox .stat {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 0;
+  padding: 5px 0;
+  font-size: 13px;
+}
+#chatMonitorBox .stat-label {
+  font-weight: bold;
+}
+#chatMonitorBox .stat-value {
+  color: #065fd4;
+}
+#chatMonitorBox .button-group {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+#chatMonitorBox .toggle-btn {
+  flex: 1;
+  padding: 10px;
+  border: 2px solid #065fd4;
+  background: white;
+  color: #065fd4;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+#chatMonitorBox .toggle-btn.active {
+  background: #065fd4;
+  color: white;
+  border-color: #065fd4;
+}
+#chatMonitorBox .toggle-btn:hover {
+  opacity: 0.8;
+}
+#chatMonitorBox button {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin: 5px 0;
+  border: none;
+  background: #065fd4;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#chatMonitorBox button:hover {
+  background: #0a47a9;
+}
+#logContainer {
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 6px;
+  margin: 10px 0;
+  height: 24px;
+  overflow: hidden;
+  font-size: 11px;
+  font-family: monospace;
+  line-height: 1.4;
+  color: #333;
+}
+`;
+const styleEl = document.createElement('style');
+styleEl.appendChild(document.createTextNode(boxStyle));
+document.head.appendChild(styleEl);
+
+const box = document.createElement('div');
+box.id = 'chatMonitorBox';
+
+const h3 = document.createElement('h3');
+h3.textContent = '📊 Chat Monitor';
+box.appendChild(h3);
+
+const statDiv = document.createElement('div');
+statDiv.className = 'stat';
+const statLabel = document.createElement('span');
+statLabel.className = 'stat-label';
+statLabel.textContent = 'Messages Captured:';
+const statValue = document.createElement('span');
+statValue.className = 'stat-value';
+statValue.id = 'messageCount';
+statValue.textContent = '0';
+statDiv.appendChild(statLabel);
+statDiv.appendChild(statValue);
+box.appendChild(statDiv);
+
+const statusDiv = document.createElement('div');
+statusDiv.className = 'stat';
+const statusLabel = document.createElement('span');
+statusLabel.className = 'stat-label';
+statusLabel.textContent = 'Status:';
+const statusValue = document.createElement('span');
+statusValue.className = 'stat-value';
+statusValue.id = 'monitorStatus';
+statusValue.textContent = '🔴 Stopped';
+statusDiv.appendChild(statusLabel);
+statusDiv.appendChild(statusValue);
+box.appendChild(statusDiv);
+
+const logContainer = document.createElement('div');
+logContainer.id = 'logContainer';
+logContainer.textContent = 'Waiting...';
+box.appendChild(logContainer);
+
+const buttonGroup = document.createElement('div');
+buttonGroup.className = 'button-group';
+
+const stopBtn = document.createElement('button');
+stopBtn.className = 'toggle-btn active';
+stopBtn.id = 'stopBtn';
+stopBtn.textContent = '❌';
+stopBtn.addEventListener('click', () => {
+  if (isMonitoring) {
+    isMonitoring = false;
+    clearInterval(monitorInterval);
+    stopBtn.classList.add('active');
+    startBtn.classList.remove('active');
+    console.log('[Chat Monitor] Monitoring stopped');
+    updateMonitoringBox();
+  }
 });
-console.log('Final processed HTML length:', html.length);
-console.log('Processed HTML preview (first 500 chars):', html.substring(0, 500));
-console.log('Creating CSS styles...');
-const cssText = `<style>
-img {
-height: 4em !important;
-width: 4em !important;
-margin: 0 0 0 -110px;
+
+const startBtn = document.createElement('button');
+startBtn.className = 'toggle-btn';
+startBtn.id = 'startBtn';
+startBtn.textContent = '🟢';
+startBtn.addEventListener('click', () => {
+  if (!isMonitoring) {
+    isMonitoring = true;
+    stopBtn.classList.remove('active');
+    startBtn.classList.add('active');
+    console.log('[Chat Monitor] Monitoring started - scanning every 500ms');
+    monitorInterval = setInterval(scanForMessages, 500);
+    scanForMessages();
+    updateMonitoringBox();
+  }
+});
+
+buttonGroup.appendChild(stopBtn);
+buttonGroup.appendChild(startBtn);
+box.appendChild(buttonGroup);
+
+const copyBtn = document.createElement('button');
+copyBtn.id = 'copyBtn';
+copyBtn.textContent = 'Copy to Clipboard as json';
+copyBtn.addEventListener('click', copyToClipboard);
+box.appendChild(copyBtn);
+
+const saveBtn = document.createElement('button');
+saveBtn.id = 'saveBtn';
+saveBtn.textContent = 'Save as HTML';
+saveBtn.addEventListener('click', saveAsHTML);
+box.appendChild(saveBtn);
+
+const endBtn = document.createElement('button');
+endBtn.id = 'endBtn';
+endBtn.textContent = 'End Capture';
+endBtn.addEventListener('click', endCapture);
+box.appendChild(endBtn);
+
+document.body.appendChild(box);
+console.log('[Chat Monitor] Bookmarklet initialized');
 }
-img.emoji {
-height: 1.5em !important;
-width: 1.5em !important;
-margin: 6px 0 -6px 0;
+
+
+function parseMessage(messageElement) {
+try {
+const messageId = messageElement.getAttribute('id');
+
+if (!messageId) {
+  return null;
 }
-yt-live-chat-text-message-renderer {
-display: flex;
-align-items: center;
-gap: 8px;
-padding: 20px 0 10px 120px;
-border-bottom: 2px solid grey;
-margin: 0px 0 2px 0;
+
+if (processedMessageIds.has(messageId)) {
+  return null;
 }
-yt-live-chat-text-message-renderer :has(yt-live-chat-author-badge-renderer) {
-margin: -80px 0 2px 0;
+
+const authorNameEl = messageElement.querySelector('#author-name');
+let altAuthorEl = null;
+
+if (!authorNameEl) {
+  altAuthorEl = messageElement.querySelector('[id*="author"]') ||
+                messageElement.querySelector('span[class*="author"]') ||
+                messageElement.querySelector('yt-formatted-string');
+  if (!altAuthorEl) {
+    return null;
+  }
 }
-body > * {
-margin: 8px 0 2px 0;
-border-bottom: 2px solid grey;
+
+const username = (authorNameEl || altAuthorEl).textContent.trim();
+
+const messageEl = messageElement.querySelector('#message');
+let altMessageEl = null;
+
+if (!messageEl) {
+  altMessageEl = messageElement.querySelector('[id*="message"]') ||
+                 messageElement.querySelector('yt-formatted-string:last-child') ||
+                 messageElement.querySelector('span[class*="message"]');
+  if (!altMessageEl) {
+    return null;
+  }
 }
-yt-live-chat-author-badge-renderer {
-display: inline-block;
-margin: 0 0 0 30px;
-transform: scale(0.25);
-transform-origin: bottom;
+
+const messageTextEl = messageEl || altMessageEl;
+const messageHtml = messageTextEl.innerHTML;
+
+const timestamp = getMessageTimestamp();
+
+const avatarImg = messageElement.querySelector('img#img');
+let avatarSrc = '';
+if (avatarImg) {
+  avatarSrc = avatarImg.getAttribute('src') || '';
 }
-span#prepend-chat-badges,
-span#chat-badges {
-margin: 0;
+
+processedMessageIds.add(messageId);
+
+const result = {
+  username: username,
+  timestamp: timestamp,
+  messageHtml: messageHtml || '',
+  avatar: avatarSrc
+};
+
+
+return result;
+} catch (e) {
+console.error('[Chat Monitor] Parse error:', e);
+return null;
 }
-</style>`;
-console.log('CSS text length:', cssText.length);
-console.log('Combining CSS and HTML...');
-const finalHtml = cssText + html;
-console.log('Final HTML length:', finalHtml.length);
-console.log('Generating filename...');
+}
+
+
+
+function saveAsHTML() {
+if (capturedMessages.length === 0) {
+  console.log('[Chat Monitor] Save attempted with no messages');
+  showAlert('No messages captured yet!');
+  return;
+}
+let htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Chat Messages</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+.message { background: white; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #065fd4; display: flex; gap: 15px; }
+.avatar { flex-shrink: 0; }
+.avatar img { width: 48px; height: 48px; border-radius: 50%; }
+.content { flex: 1; }
+.username { font-weight: bold; color: #065fd4; }
+.timestamp { color: #999; font-size: 12px; margin-left: 10px; }
+.text { margin-top: 8px; color: #333; line-height: 1.5; }
+</style>
+</head>
+<body>
+<h1>Chat Messages (${capturedMessages.length} total)</h1>
+`;
+capturedMessages.forEach(msg => {
+  const avatarHtml = msg.avatar ? `<div class="avatar"><img src="${escapeHtml(msg.avatar)}" alt="${escapeHtml(msg.username)}"></div>` : '';
+  const messageContent = msg.messageHtml || '';
+  htmlContent += `<div class="message">${avatarHtml}<div class="content"><span class="username">${escapeHtml(msg.username)}</span><span class="timestamp">${msg.timestamp}</span><div class="text">${messageContent}</div></div></div>`;
+});
+htmlContent += `</body></html>`;
+const blob = new Blob([htmlContent], { type: 'text/html' });
+const url = URL.createObjectURL(blob);
 const today = new Date();
 const dateStr = `${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`;
-console.log('Date string:', dateStr);
-const pageUrl = window.location.href;
-let videoId = 'unknown';
-let fileName = '';
-let match = pageUrl.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-if (match) {
-videoId = match[1];
-console.log('Video ID from URL parameter:', videoId);
-} else {
-match = pageUrl.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-if (match) {
-videoId = match[1];
-console.log('Video ID from youtu.be:', videoId);
-}
-}
-const pageTitle = document.title.trim();
-console.log('Page title:', pageTitle);
-if (pageTitle && pageTitle.toLowerCase() !== 'youtube') {
-fileName = `${dateStr}_${videoId}_${pageTitle}_chat.html`;
-} else {
-fileName = `${dateStr}_${videoId}_chat.html`;
-}
-console.log('File name:', fileName);
-console.log('Showing user options...');
-showAlert('Choose an option:', [
-{
-text: 'Copy to Clipboard',
-action: () => {
-console.log('User selected: Copy to Clipboard');
-navigator.clipboard.writeText(finalHtml).then(() => {
-console.log('Successfully copied to clipboard');
-showAlertWithLink('HTML with styles copied to clipboard! (You could paste it into an email, or to see it rendered by pasting it at:', 'https://codepen.io/pen/');
-}).catch(err => {
-console.error('Clipboard copy failed:', err);
-showAlert('Failed to copy to clipboard: ' + err);
-});
-}
-},
-{
-text: 'Download as HTML',
-action: () => {
-console.log('User selected: Download as HTML');
-const blob = new Blob([finalHtml], { type: 'text/html' });
-const url = URL.createObjectURL(blob);
-console.log('Blob URL created:', url);
+const fileName = `${dateStr}_chat_messages.html`;
 const a = document.createElement('a');
 a.href = url;
 a.download = fileName;
 document.body.appendChild(a);
-console.log('Download link created, triggering click...');
 a.click();
 document.body.removeChild(a);
 URL.revokeObjectURL(url);
-console.log('Download completed');
-showAlert('HTML file downloaded successfully as: ' + fileName);
+console.log('[Chat Monitor] Saved ' + capturedMessages.length + ' messages as ' + fileName);
+showAlert('Saved ' + capturedMessages.length + ' messages as ' + fileName);
 }
-}
-]);
-} else {
-console.error('ERROR: Could not find div#chat');
-showAlert('Could not find chat content. Check console for details.');
-}
+
+
+
+function scanForMessages() {
+try {
+console.log('[Chat Monitor] Starting scan');
+
+let chatContainer = null;
+
+try {
+  const chatFrame = document.querySelector('iframe#chatframe');
+  if (chatFrame && chatFrame.contentDocument) {
+    chatContainer = chatFrame.contentDocument.querySelector('div#chat');
+    if (chatContainer) {
+      console.log('[Chat Monitor] Found chat container in iframe');
+    }
+  }
 } catch (e) {
-console.error('EXCEPTION during processing:', e);
-console.error('Error name:', e.name);
-console.error('Error message:', e.message);
-console.error('Error stack:', e.stack);
-showAlert('Error processing content. Check console logs.');
+  console.log('[Chat Monitor] Cannot access iframe (cross-origin)');
 }
-function showAlert(message, options = []) {
-console.log('showAlert called with message:', message);
-const style = `
-#alertOverlay {
-position: fixed;
-top: 0;
-left: 0;
-right: 0;
-bottom: 0;
-background: rgba(0,0,0,0.5);
-display: flex;
-align-items: center;
-justify-content: center;
-z-index: 10000;
+
+if (!chatContainer) {
+  chatContainer = document.querySelector('div#contents.style-scope.yt-live-chat-app');
+  if (chatContainer) {
+    console.log('[Chat Monitor] Found chat container on main page');
+  }
 }
-#alertBox {
-background: white;
-border-radius: 8px;
-box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-padding: 30px;
-max-width: 500px;
-text-align: center;
-font-family: Arial, sans-serif;
+
+if (!chatContainer) {
+  chatContainer = document.querySelector('yt-live-chat-item-list-renderer');
+  if (chatContainer) {
+    console.log('[Chat Monitor] Found chat container (yt-live-chat-item-list-renderer)');
+  }
 }
-#alertBox p {
-margin: 0 0 20px 0;
-font-size: 16px;
-line-height: 1.5;
+
+if (!chatContainer) {
+  console.log('[Chat Monitor] Chat container not found');
+  const liveChat = document.querySelector('yt-live-chat-app');
+  if (liveChat) {
+    console.log('[Chat Monitor] Found yt-live-chat-app element');
+  }
+  const messages = document.querySelectorAll('yt-live-chat-text-message-renderer');
+  console.log('[Chat Monitor] Found ' + messages.length + ' message elements directly');
+  updateLog(messages.length, 0, capturedMessages.length);
+  return;
 }
-#alertButtonContainer {
-display: flex;
-gap: 10px;
-justify-content: center;
-}
-#alertDismissBtn,
-.alertActionBtn {
-padding: 10px 20px;
-border: none;
-background: #065fd4;
-color: white;
-border-radius: 4px;
-cursor: pointer;
-font-size: 14px;
-}
-#alertDismissBtn:hover,
-.alertActionBtn:hover {
-background: #0a47a9;
-}
-`;
-const styleEl = document.createElement('style');
-styleEl.appendChild(document.createTextNode(style));
-document.head.appendChild(styleEl);
-const overlay = document.createElement('div');
-overlay.id = 'alertOverlay';
-const alertBox = document.createElement('div');
-alertBox.id = 'alertBox';
-const messageEl = document.createElement('p');
-messageEl.textContent = message;
-alertBox.appendChild(messageEl);
-const buttonContainer = document.createElement('div');
-buttonContainer.id = 'alertButtonContainer';
-if (options.length > 0) {
-options.forEach(option => {
-const btn = document.createElement('button');
-btn.className = 'alertActionBtn';
-btn.textContent = option.text;
-btn.onclick = () => {
-console.log('User clicked button:', option.text);
-overlay.remove();
-option.action();
-};
-buttonContainer.appendChild(btn);
+
+const messageElements = chatContainer.querySelectorAll('yt-live-chat-text-message-renderer');
+console.log('[Chat Monitor] Found ' + messageElements.length + ' message elements');
+
+let newMessagesCount = 0;
+messageElements.forEach((messageEl) => {
+  const parsedMessage = parseMessage(messageEl);
+  if (parsedMessage) {
+    capturedMessages.push(parsedMessage);
+    newMessagesCount++;
+  }
 });
+
+console.log('[Chat Monitor] New messages: ' + newMessagesCount + ', Total: ' + capturedMessages.length);
+updateLog(messageElements.length, newMessagesCount, capturedMessages.length);
+updateMonitoringBox();
+
+} catch (e) {
+console.error('[Chat Monitor] Scan error:', e);
 }
-const closeBtn = document.createElement('button');
-closeBtn.id = 'alertDismissBtn';
-closeBtn.textContent = 'Dismiss';
-closeBtn.onclick = () => {
-console.log('User dismissed alert');
-overlay.remove();
-};
-buttonContainer.appendChild(closeBtn);
-alertBox.appendChild(buttonContainer);
-overlay.appendChild(alertBox);
-document.body.appendChild(overlay);
-console.log('Alert dialog displayed');
 }
-function showAlertWithLink(message, linkUrl) {
-console.log('showAlertWithLink called with message:', message);
-const style = `
-#alertOverlay {
-position: fixed;
-top: 0;
-left: 0;
-right: 0;
-bottom: 0;
-background: rgba(0,0,0,0.5);
-display: flex;
-align-items: center;
-justify-content: center;
-z-index: 10000;
+
+function copyToClipboard() {
+if (capturedMessages.length === 0) {
+  console.log('[Chat Monitor] Copy attempted with no messages');
+  showAlert('No messages captured yet!');
+  return;
 }
-#alertBox {
-background: white;
-border-radius: 8px;
-box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-padding: 30px;
-max-width: 500px;
-text-align: center;
-font-family: Arial, sans-serif;
-}
-#alertBox p {
-margin: 0 0 20px 0;
-font-size: 16px;
-line-height: 1.5;
-}
-#alertBox a {
-color: #065fd4;
-text-decoration: none;
-font-weight: bold;
-}
-#alertBox a:hover {
-text-decoration: underline;
-}
-#alertButtonContainer {
-display: flex;
-gap: 10px;
-justify-content: center;
-}
-#alertDismissBtn,
-.alertActionBtn {
-padding: 10px 20px;
-border: none;
-background: #065fd4;
-color: white;
-border-radius: 4px;
-cursor: pointer;
-font-size: 14px;
-}
-#alertDismissBtn:hover,
-.alertActionBtn:hover {
-background: #0a47a9;
-}
+let htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Chat Messages</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+.message { background: white; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #065fd4; display: flex; gap: 15px; }
+.avatar { flex-shrink: 0; }
+.avatar img { width: 48px; height: 48px; border-radius: 50%; }
+.content { flex: 1; }
+.username { font-weight: bold; color: #065fd4; }
+.timestamp { color: #999; font-size: 12px; margin-left: 10px; }
+.text { margin-top: 8px; color: #333; line-height: 1.5; }
+</style>
+</head>
+<body>
+<h1>Chat Messages (${capturedMessages.length} total)</h1>
 `;
-const styleEl = document.createElement('style');
-styleEl.appendChild(document.createTextNode(style));
-document.head.appendChild(styleEl);
-const overlay = document.createElement('div');
-overlay.id = 'alertOverlay';
-const alertBox = document.createElement('div');
-alertBox.id = 'alertBox';
-const messageEl = document.createElement('p');
-const textNode = document.createTextNode(message + ' ');
-const link = document.createElement('a');
-link.href = linkUrl;
-link.textContent = linkUrl;
-link.target = '_blank';
-messageEl.appendChild(textNode);
-messageEl.appendChild(link);
-alertBox.appendChild(messageEl);
-const buttonContainer = document.createElement('div');
-buttonContainer.id = 'alertButtonContainer';
-const closeBtn = document.createElement('button');
-closeBtn.id = 'alertDismissBtn';
-closeBtn.textContent = 'Dismiss';
-closeBtn.onclick = () => {
-console.log('User dismissed alert');
-overlay.remove();
-};
-buttonContainer.appendChild(closeBtn);
-alertBox.appendChild(buttonContainer);
-overlay.appendChild(alertBox);
-document.body.appendChild(overlay);
-console.log('Alert with link dialog displayed');
+capturedMessages.forEach(msg => {
+  const avatarHtml = msg.avatar ? `<div class="avatar"><img src="${escapeHtml(msg.avatar)}" alt="${escapeHtml(msg.username)}"></div>` : '';
+  const messageContent = msg.messageHtml || '';
+  htmlContent += `<div class="message">${avatarHtml}<div class="content"><span class="username">${escapeHtml(msg.username)}</span><span class="timestamp">${msg.timestamp}</span><div class="text">${messageContent}</div></div></div>`;
+});
+htmlContent += `</body></html>`;
+navigator.clipboard.writeText(htmlContent).then(() => {
+  console.log('[Chat Monitor] Copied ' + capturedMessages.length + ' messages to clipboard');
+  showAlert('Copied ' + capturedMessages.length + ' messages to clipboard!');
+}).catch(err => {
+  console.error('[Chat Monitor] Failed to copy to clipboard:', err);
+  showAlert('Failed to copy to clipboard');
+});
+
 }
-console.log('=== CHAT PARSER SETUP COMPLETE ===');
+
+function saveAsHTML() {
+if (capturedMessages.length === 0) {
+  console.log('[Chat Monitor] Save attempted with no messages');
+  showAlert('No messages captured yet!');
+  return;
+}
+let htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Chat Messages</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+.message { background: white; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #065fd4; display: flex; gap: 15px; }
+.avatar { flex-shrink: 0; }
+.avatar img { width: 48px; height: 48px; border-radius: 50%; }
+.content { flex: 1; }
+.username { font-weight: bold; color: #065fd4; }
+.timestamp { color: #999; font-size: 12px; margin-left: 10px; }
+.text { margin-top: 8px; color: #333; }
+</style>
+</head>
+<body>
+<h1>Chat Messages (${capturedMessages.length} total)</h1>
+`;
+capturedMessages.forEach(msg => {
+  const avatarHtml = msg.avatar ? `<div class="avatar"><img src="${escapeHtml(msg.avatar)}" alt="${escapeHtml(msg.username)}"></div>` : '';
+  htmlContent += `<div class="message">${avatarHtml}<div class="content"><span class="username">${escapeHtml(msg.username)}</span><span class="timestamp">${msg.timestamp}</span><div class="text">${msg.messageHtml || ''}</div></div></div>`;
+});
+htmlContent += `</body></html>`;
+const blob = new Blob([htmlContent], { type: 'text/html' });
+const url = URL.createObjectURL(blob);
+const today = new Date();
+const dateStr = `${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`;
+const fileName = `${dateStr}_chat_messages.html`;
+const a = document.createElement('a');
+a.href = url;
+a.download = fileName;
+document.body.appendChild(a);
+a.click();
+document.body.removeChild(a);
+URL.revokeObjectURL(url);
+console.log('[Chat Monitor] Saved ' + capturedMessages.length + ' messages as ' + fileName);
+showAlert('Saved ' + capturedMessages.length + ' messages as ' + fileName);
+}
+
+
+function endCapture() {
+console.log('[Chat Monitor] End capture requested');
+if (isMonitoring) {
+  isMonitoring = false;
+  clearInterval(monitorInterval);
+  console.log('[Chat Monitor] Monitoring stopped');
+}
+const box = document.getElementById('chatMonitorBox');
+if (box) {
+  box.remove();
+  console.log('[Chat Monitor] Monitoring box removed');
+}
+}
+
+createMonitoringBox();
 })();
