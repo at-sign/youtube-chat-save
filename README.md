@@ -1,5 +1,5 @@
 # youtube-chat-save
-A js bookmarklet you can use to save a copy of the currently loaded chat log on a youtube page.
+A js bookmarklet you can use to save a copy of the currently loaded live-chat log on a youtube page.
 
 # What it does
 The result will be that it presents two options in a window alert, and you choose whether to copy the chat contents to your clipboard or save to an html file. That's it!
