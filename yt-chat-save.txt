@@ -1,0 +1,363 @@
+javascript:(function(){
+console.log('=== CHAT PARSER STARTED ===');
+let chatDiv = null;
+const chatFrame = document.querySelector('iframe#chatframe');
+if (chatFrame) {
+try {
+const iframeDoc = chatFrame.contentDocument || chatFrame.contentWindow.document;
+if (iframeDoc) {
+chatDiv = iframeDoc.querySelector('div#chat');
+console.log('Found div#chat in iframe:', !!chatDiv);
+}
+} catch (e) {
+console.log('Cannot access iframe content (cross-origin):', e.message);
+}
+}
+if (!chatDiv) {
+console.log('Looking for div#contents with class "style-scope yt-live-chat-app"...');
+chatDiv = document.querySelector('div#contents.style-scope.yt-live-chat-app');
+console.log('div#contents found:', !!chatDiv);
+}
+try {
+if (chatDiv) {
+console.log('Extracting HTML from div#chat...');
+let html = chatDiv.innerHTML;
+console.log('Original HTML length:', html.length);
+console.log('Original HTML preview (first 500 chars):', html.substring(0, 500));
+console.log('Applying regex replacements...');
+const replacements = [
+{
+name: 'author chip separators',
+pattern: /yt-live-chat-author-chip"><\/span>/g,
+replacement: 'yt-live-chat-author-chip"> - </span>'
+},
+{
+name: 'tp-yt-iron-pages element',
+pattern: /<tp-yt-iron-pages[^>]*id="panel-pages"[^>]*>[\s\S]*?<\/tp-yt-iron-pages>/g,
+replacement: ''
+},
+{
+name: 'menu divs',
+pattern: /<div[^>]*\bid="menu"[^>]*>[\s\S]*?<\/div>/g,
+replacement: ''
+},
+{
+name: 'yt-image tags',
+pattern: /<yt-image[^>]*<\/yt-image>/g,
+replacement: ''
+},
+{
+name: 'yt-icon tags',
+pattern: /<yt-icon[^>]*>[\s\S]*?<\/yt-icon>/g,
+replacement: ''
+},
+{
+name: 'item-offset divs',
+pattern: /<div[^>]*\bid="item-offset"[^>]*>[\s\S]*?<\/div>/g,
+replacement: ''
+},
+{
+name: 'button tags',
+pattern: /<button[^>]*>[\s\S]*?<\/button>/g,
+replacement: ''
+}
+];
+replacements.forEach((item, index) => {
+console.log(`Removing ${item.name}...`);
+const beforeLen = html.length;
+html = html.replace(item.pattern, item.replacement);
+console.log('Changed from', beforeLen, 'to', html.length, 'chars');
+});
+console.log('Final processed HTML length:', html.length);
+console.log('Processed HTML preview (first 500 chars):', html.substring(0, 500));
+console.log('Creating CSS styles...');
+const cssText = `<style>
+img {
+height: 4em !important;
+width: 4em !important;
+margin: 0 0 0 -110px;
+}
+img.emoji {
+height: 1.5em !important;
+width: 1.5em !important;
+margin: 6px 0 -6px 0;
+}
+yt-live-chat-text-message-renderer {
+display: flex;
+align-items: center;
+gap: 8px;
+padding: 20px 0 10px 120px;
+border-bottom: 2px solid grey;
+margin: 0px 0 2px 0;
+}
+yt-live-chat-text-message-renderer :has(yt-live-chat-author-badge-renderer) {
+margin: -80px 0 2px 0;
+}
+body > * {
+margin: 8px 0 2px 0;
+border-bottom: 2px solid grey;
+}
+yt-live-chat-author-badge-renderer {
+display: inline-block;
+margin: 0 0 0 30px;
+transform: scale(0.25);
+transform-origin: bottom;
+}
+span#prepend-chat-badges,
+span#chat-badges {
+margin: 0;
+}
+</style>`;
+console.log('CSS text length:', cssText.length);
+console.log('Combining CSS and HTML...');
+const finalHtml = cssText + html;
+console.log('Final HTML length:', finalHtml.length);
+console.log('Generating filename...');
+const today = new Date();
+const dateStr = `${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`;
+console.log('Date string:', dateStr);
+const pageUrl = window.location.href;
+let videoId = 'unknown';
+let fileName = '';
+let match = pageUrl.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+if (match) {
+videoId = match[1];
+console.log('Video ID from URL parameter:', videoId);
+} else {
+match = pageUrl.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+if (match) {
+videoId = match[1];
+console.log('Video ID from youtu.be:', videoId);
+}
+}
+const pageTitle = document.title.trim();
+console.log('Page title:', pageTitle);
+if (pageTitle && pageTitle.toLowerCase() !== 'youtube') {
+fileName = `${dateStr}_${videoId}_${pageTitle}_chat.html`;
+} else {
+fileName = `${dateStr}_${videoId}_chat.html`;
+}
+console.log('File name:', fileName);
+console.log('Showing user options...');
+showAlert('Choose an option:', [
+{
+text: 'Copy to Clipboard',
+action: () => {
+console.log('User selected: Copy to Clipboard');
+navigator.clipboard.writeText(finalHtml).then(() => {
+console.log('Successfully copied to clipboard');
+showAlertWithLink('HTML with styles copied to clipboard! (You could paste it into an email, or to see it rendered by pasting it at:', 'https://codepen.io/pen/');
+}).catch(err => {
+console.error('Clipboard copy failed:', err);
+showAlert('Failed to copy to clipboard: ' + err);
+});
+}
+},
+{
+text: 'Download as HTML',
+action: () => {
+console.log('User selected: Download as HTML');
+const blob = new Blob([finalHtml], { type: 'text/html' });
+const url = URL.createObjectURL(blob);
+console.log('Blob URL created:', url);
+const a = document.createElement('a');
+a.href = url;
+a.download = fileName;
+document.body.appendChild(a);
+console.log('Download link created, triggering click...');
+a.click();
+document.body.removeChild(a);
+URL.revokeObjectURL(url);
+console.log('Download completed');
+showAlert('HTML file downloaded successfully as: ' + fileName);
+}
+}
+]);
+} else {
+console.error('ERROR: Could not find div#chat');
+showAlert('Could not find chat content. Check console for details.');
+}
+} catch (e) {
+console.error('EXCEPTION during processing:', e);
+console.error('Error name:', e.name);
+console.error('Error message:', e.message);
+console.error('Error stack:', e.stack);
+showAlert('Error processing content. Check console logs.');
+}
+function showAlert(message, options = []) {
+console.log('showAlert called with message:', message);
+const style = `
+#alertOverlay {
+position: fixed;
+top: 0;
+left: 0;
+right: 0;
+bottom: 0;
+background: rgba(0,0,0,0.5);
+display: flex;
+align-items: center;
+justify-content: center;
+z-index: 10000;
+}
+#alertBox {
+background: white;
+border-radius: 8px;
+box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+padding: 30px;
+max-width: 500px;
+text-align: center;
+font-family: Arial, sans-serif;
+}
+#alertBox p {
+margin: 0 0 20px 0;
+font-size: 16px;
+line-height: 1.5;
+}
+#alertButtonContainer {
+display: flex;
+gap: 10px;
+justify-content: center;
+}
+#alertDismissBtn,
+.alertActionBtn {
+padding: 10px 20px;
+border: none;
+background: #065fd4;
+color: white;
+border-radius: 4px;
+cursor: pointer;
+font-size: 14px;
+}
+#alertDismissBtn:hover,
+.alertActionBtn:hover {
+background: #0a47a9;
+}
+`;
+const styleEl = document.createElement('style');
+styleEl.appendChild(document.createTextNode(style));
+document.head.appendChild(styleEl);
+const overlay = document.createElement('div');
+overlay.id = 'alertOverlay';
+const alertBox = document.createElement('div');
+alertBox.id = 'alertBox';
+const messageEl = document.createElement('p');
+messageEl.textContent = message;
+alertBox.appendChild(messageEl);
+const buttonContainer = document.createElement('div');
+buttonContainer.id = 'alertButtonContainer';
+if (options.length > 0) {
+options.forEach(option => {
+const btn = document.createElement('button');
+btn.className = 'alertActionBtn';
+btn.textContent = option.text;
+btn.onclick = () => {
+console.log('User clicked button:', option.text);
+overlay.remove();
+option.action();
+};
+buttonContainer.appendChild(btn);
+});
+}
+const closeBtn = document.createElement('button');
+closeBtn.id = 'alertDismissBtn';
+closeBtn.textContent = 'Dismiss';
+closeBtn.onclick = () => {
+console.log('User dismissed alert');
+overlay.remove();
+};
+buttonContainer.appendChild(closeBtn);
+alertBox.appendChild(buttonContainer);
+overlay.appendChild(alertBox);
+document.body.appendChild(overlay);
+console.log('Alert dialog displayed');
+}
+function showAlertWithLink(message, linkUrl) {
+console.log('showAlertWithLink called with message:', message);
+const style = `
+#alertOverlay {
+position: fixed;
+top: 0;
+left: 0;
+right: 0;
+bottom: 0;
+background: rgba(0,0,0,0.5);
+display: flex;
+align-items: center;
+justify-content: center;
+z-index: 10000;
+}
+#alertBox {
+background: white;
+border-radius: 8px;
+box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+padding: 30px;
+max-width: 500px;
+text-align: center;
+font-family: Arial, sans-serif;
+}
+#alertBox p {
+margin: 0 0 20px 0;
+font-size: 16px;
+line-height: 1.5;
+}
+#alertBox a {
+color: #065fd4;
+text-decoration: none;
+font-weight: bold;
+}
+#alertBox a:hover {
+text-decoration: underline;
+}
+#alertButtonContainer {
+display: flex;
+gap: 10px;
+justify-content: center;
+}
+#alertDismissBtn,
+.alertActionBtn {
+padding: 10px 20px;
+border: none;
+background: #065fd4;
+color: white;
+border-radius: 4px;
+cursor: pointer;
+font-size: 14px;
+}
+#alertDismissBtn:hover,
+.alertActionBtn:hover {
+background: #0a47a9;
+}
+`;
+const styleEl = document.createElement('style');
+styleEl.appendChild(document.createTextNode(style));
+document.head.appendChild(styleEl);
+const overlay = document.createElement('div');
+overlay.id = 'alertOverlay';
+const alertBox = document.createElement('div');
+alertBox.id = 'alertBox';
+const messageEl = document.createElement('p');
+const textNode = document.createTextNode(message + ' ');
+const link = document.createElement('a');
+link.href = linkUrl;
+link.textContent = linkUrl;
+link.target = '_blank';
+messageEl.appendChild(textNode);
+messageEl.appendChild(link);
+alertBox.appendChild(messageEl);
+const buttonContainer = document.createElement('div');
+buttonContainer.id = 'alertButtonContainer';
+const closeBtn = document.createElement('button');
+closeBtn.id = 'alertDismissBtn';
+closeBtn.textContent = 'Dismiss';
+closeBtn.onclick = () => {
+console.log('User dismissed alert');
+overlay.remove();
+};
+buttonContainer.appendChild(closeBtn);
+alertBox.appendChild(buttonContainer);
+overlay.appendChild(alertBox);
+document.body.appendChild(overlay);
+console.log('Alert with link dialog displayed');
+}
+console.log('=== CHAT PARSER SETUP COMPLETE ===');
+})();
